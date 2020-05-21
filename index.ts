@@ -7,10 +7,10 @@ import {
 } from "https://deno.land/std/ws/mod.ts";
 import { v4 as uuidv4 } from "https://deno.land/std/uuid/mod.ts";
 
-const port = 8080;
+const port = parseInt(Deno.env.get("PORT") || "8080");
 
 interface User {
-  name: string;
+  name?: string;
   genderKey: string;
   filter: {
     genderKey: string;
