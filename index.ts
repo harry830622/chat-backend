@@ -63,19 +63,20 @@ const acceptSock: (req: ServerRequest) => Promise<string | null> = async (
 
 const closeSock: (sockId: string) => Promise<void> = async (sockId) => {
   try {
+    console.log(`Closing sock ${sockId}`);
     const sock = sockById.get(sockId);
     if (sock === undefined) {
       throw new Error(`No sock with id: ${sockId}`);
     }
     const pairedSockId = pairedSockIdBySockId.get(sockId);
+    sockById.delete(sockId);
+    userBySockId.delete(sockId);
+    for (let [, sockIds] of waitingSockIdsByGenderKey) {
+      sockIds.delete(sockId);
+    }
+    pairedSockIdBySockId.delete(sockId);
     if (!sock.isClosed) {
       await sock.close();
-      sockById.delete(sockId);
-      userBySockId.delete(sockId);
-      for (let [, sockIds] of waitingSockIdsByGenderKey) {
-        sockIds.delete(sockId);
-      }
-      pairedSockIdBySockId.delete(sockId);
     }
     if (pairedSockId === undefined) {
       return;
@@ -84,14 +85,14 @@ const closeSock: (sockId: string) => Promise<void> = async (sockId) => {
     if (pairedSock === undefined) {
       throw new Error(`No sock with id: ${sockId}`);
     }
+    sockById.delete(pairedSockId);
+    userBySockId.delete(pairedSockId);
+    for (let [, sockIds] of waitingSockIdsByGenderKey) {
+      sockIds.delete(pairedSockId);
+    }
+    pairedSockIdBySockId.delete(pairedSockId);
     if (!pairedSock.isClosed) {
       await pairedSock.close();
-      sockById.delete(pairedSockId);
-      userBySockId.delete(pairedSockId);
-      for (let [, sockIds] of waitingSockIdsByGenderKey) {
-        sockIds.delete(pairedSockId);
-      }
-      pairedSockIdBySockId.delete(pairedSockId);
     }
   } catch (err) {
     console.error(`Failed to close the socket: ${err}`);
@@ -161,6 +162,7 @@ const pairUser: (user: User, sockId: string) => string | null = (
       return Math.random() < 0.5 ? "M" : "F";
     })()
     : user.filter.genderKey;
+  console.log("Pairing with:", waitingSockIdsByGenderKey);
   const waitingSockIds = waitingSockIdsByGenderKey.get(
     targetGenderKey,
   );
@@ -190,22 +192,27 @@ listenAndServe({ port }, async (req) => {
       await req.respond({ status: 400 });
       return;
     }
+    console.log(`Sock connected: ${sockId}`);
     const sock = sockById.get(sockId);
-    let prevTimeoutId: number | null = null;
+    const inactiveTimeout = 3000;
+    const pongTimeout = 1000;
+    let prevInactiveTimeoutId: number | null = null;
     let pongTimeoutId: number | null = null;
     await readEvt(sockId, async (evt) => {
-      if (prevTimeoutId !== null) {
-        clearTimeout(prevTimeoutId);
+      if (prevInactiveTimeoutId !== null) {
+        clearTimeout(prevInactiveTimeoutId);
+        prevInactiveTimeoutId = null;
       }
-      prevTimeoutId = setTimeout(() => {
+      prevInactiveTimeoutId = setTimeout(() => {
         if (!sock!.isClosed) {
+          console.log("Ping...");
           sock!.ping();
           pongTimeoutId = setTimeout(() => {
-            clearTimeout(prevTimeoutId!);
+            console.log("No pong received QQ");
             closeSock(sockId);
-          }, 3000);
+          }, pongTimeout);
         }
-      }, 3000);
+      }, inactiveTimeout);
       if (typeof evt === "string") {
         const event = JSON.parse(evt);
         switch (event.type) {
@@ -270,6 +277,7 @@ listenAndServe({ port }, async (req) => {
         }
       } else if (isWebSocketPongEvent(evt)) {
         clearTimeout(pongTimeoutId!);
+        pongTimeoutId = null;
       } else if (isWebSocketCloseEvent(evt)) {
         console.log("Disconnected");
         await closeSock(sockId);
